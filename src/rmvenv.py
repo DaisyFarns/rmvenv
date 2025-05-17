@@ -8,7 +8,7 @@ import math
 import shutil
 import threading
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 SIZES = {
     "k": 2 ** 10,
