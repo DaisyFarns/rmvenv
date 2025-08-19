@@ -8,7 +8,7 @@ import math
 import shutil
 import threading
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 SIZES = {
     "k": 2 ** 10,
@@ -17,7 +17,30 @@ SIZES = {
     "t": 2 ** 40
 }
 
-DEFAULT_FILE_SIZE_LIMIT = "100m"
+class Config:
+    # If deleting files and directories based on size, use this as the default
+    DEFAULT_FILE_SIZE_LIMIT = "100m"
+
+    # Files which match any of these are marked
+    marked_files = [re.compile(r"\.class")]  # java class files
+
+    # If a directory contains a file that matches a given pattern,
+    # mark any items in that directory that match the following pattern
+    marker_sub_directories = {
+        re.compile(
+            r"(requirements\.txt)|(pyproject.toml)"
+        ): re.compile(r"^\..*venv"),  # Python virtual environments
+
+        re.compile(r"Cargo\.toml"): re.compile(r"^target$"),  # Rust
+
+        re.compile(r".*\.csproj"): re.compile(r"(bin)|(obj)")  # C#
+    }
+
+    # Do not mark nor explore these directories (except for size)
+    ignore = [re.compile(r"^\.git$")]
+
+
+CONFIG = Config()
 
 
 # This class can just be printed
@@ -195,7 +218,7 @@ class SizeAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
 
         if values is None:
-            size_string = DEFAULT_FILE_SIZE_LIMIT
+            size_string = CONFIG.DEFAULT_FILE_SIZE_LIMIT
         else:
             size_string = values
 
@@ -240,23 +263,8 @@ class SizeAction(argparse.Action):
 class Cleaner:
     def __init__(self):
 
-        # Don't mark exe files. May mark them in other ways
-        self.hide_exe = False
-
         # Don't follow symlinks by default
-        self.follow_symlinks = True
-
-        # Print directories containing these files
-        self.dir_marker_files = ["pyvenv.cfg", "CACHEDIR.TAG"]
-
-        # Don't search these directories for marker files. Do search them
-        # for size
-        self.skip_dirs = [".git"]
-
-        # Mark files who's name matches one of these pattens
-        self.mark_file_patterns = [
-            re.compile(r".*\.class$")  # Java compiled files
-        ]
+        self.follow_symlinks = False
 
         # os.DirEntry of marked items to print / delete
         self.marked_items: list[os.DirEntry] = []
@@ -264,6 +272,7 @@ class Cleaner:
         # Check for large files. By default, False
         self.check_size = False
 
+        # Number of bytes a file or dir needs to be marked due to size
         self.mark_size_bytes = 0
 
         # Dictionary which stores the sizes of items in bytes. The size of
@@ -302,9 +311,6 @@ class Cleaner:
         if "DENIED" in item_path:
             pass
 
-        if os.path.islink(item_path):
-            return 0
-
         # If size already known, return it
         if item_path in self.sizes:
             self.status.update_text(item_path)
@@ -340,21 +346,16 @@ class Cleaner:
     def evaluate(self, item: os.DirEntry):
         """
         Evaluates a DirEntry object to deicide if it should be printed
-
-        hide_exe: doesn't return True for exe files
         """
 
         if not self.follow_symlinks and os.path.islink(item.path):
             return False
 
         if item.is_file():
-            if not self.hide_exe and item.name.endswith(".exe"):
-                return True
-
             if any(
                    [
-                       pattern.match(item.name) for
-                       pattern in self.mark_file_patterns
+                       pattern.search(item.name) for
+                       pattern in CONFIG.marked_files
                    ]
                ):
 
@@ -363,6 +364,8 @@ class Cleaner:
         elif item.is_dir():
             # Search for marker files
             child_file_names = os.listdir(item.path)
+
+            # TODO: make this mark thing work with the CONFIG variable
 
             for marker in self.dir_marker_files:
                 if marker in child_file_names:
@@ -384,7 +387,9 @@ class Cleaner:
         # Calculate the size of the item
         size = self.get_size(item.path)
         if size < self.mark_size_bytes:
+            return False
 
+        if self.follow_symlinks and item.is_symlink():
             return False
 
         if item.is_file():
@@ -489,8 +494,8 @@ class Cleaner:
         Processes arguments and runs the search
         """
 
-        desc = "Searches target directory recessively location of" \
-               " Python venv's, Rust target/ directories, and exe files. " \
+        desc = "Searches directories recessively and prints location of" \
+               " Python's, Rust, and C# build locations, to be rebuilt " \
                "Skips `.git` directories. Does not follow symlinks."
 
         epilog = """Examples:
@@ -511,12 +516,6 @@ class Cleaner:
             "-d", "--dir",
             help="Directory to search (by default current directory)",
             nargs="?"
-        )
-
-        parser.add_argument(
-            "--hide-exe",
-            help="Suppresses exe files from the output",
-            action="store_true"
         )
 
         size_help = "Mark files and directories over a given size in bytes. " \
@@ -560,8 +559,6 @@ class Cleaner:
             path = args.dir
         else:
             path = "."
-
-        self.hide_exe = args.hide_exe
 
         if args.size:
             self.check_size = True

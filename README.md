@@ -8,7 +8,7 @@ This software can identify Python
 [virtual environments](https://docs.python.org/3/library/venv.html),
 Rust's
 [target](https://doc.rust-lang.org/cargo/commands/cargo-build.html)
-directory, as well as `.exe` and java's `.class` files. If deleted, this
+directory, as well as java's `.class` files. If deleted, this
 can save gigabytes of space, and they can be easily recreated and the
 packages re-downloaded when the code needs to run again. This software can
 also show and delete files and folders over a given size.
