@@ -8,16 +8,17 @@ import math
 import shutil
 import threading
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 
 SIZES = {
     "k": 2 ** 10,
     "m": 2 ** 20,
     "g": 2 ** 30,
-    "t": 2 ** 40 
+    "t": 2 ** 40
 }
 
 DEFAULT_FILE_SIZE_LIMIT = "100m"
+
 
 # This class can just be printed
 class HumanFilesize:
@@ -29,18 +30,19 @@ class HumanFilesize:
         self.size_human_string = ""
 
         self.__load_string()
-    
+
     def __load_string(self):
         """ Load the size_human_string"""
         suffixes = list(SIZES.keys())
         suffixes.sort(key=SIZES.get, reverse=True)
 
+        suffixes
+
         suffix = ""
         for s in suffixes:
-            if  SIZES[s] <= self.size_bytes:
+            if SIZES[s] <= self.size_bytes:
                 suffix = s
                 break
-        
         if suffix:
             value = self.size_bytes / SIZES[s]
 
@@ -54,12 +56,12 @@ class HumanFilesize:
             value_str += " " + suffix.upper() + "b"
         else:
             value_str = str(self.size_bytes) + " bytes"
-        
+
         self.size_human_string = value_str
-    
+
     def str(self):
         return self.__str__()
-    
+
     def __str__(self):
         return self.__repr__()
 
@@ -82,7 +84,9 @@ class StatusIndicator:
     FILE = sys.stderr
 
     def __init__(self):
-        self.thread: threading.Thread = threading.Thread(target=self.main_thread)
+        self.thread: threading.Thread = threading.Thread(
+            target=self.main_thread
+        )
         self.text: str = ""
         self.text_lock = threading.Lock()
         self.stop_flag = threading.Event()
@@ -95,10 +99,10 @@ class StatusIndicator:
             if e.errno == 25:
                 # Non interactive terminal
                 self.non_interactive_terminal = True
-    
+
     def update_text(self, text):
         """
-        Updates the status. Acquires the lock on the tex 
+        Updates the status. Acquires the lock on the text
         """
 
         self.text_lock.acquire()
@@ -116,9 +120,9 @@ class StatusIndicator:
 
         if self.stop_flag.wait(self.DONT_LOG):
             return
-        
+
         self.__write("Working")
-        
+
         if self.stop_flag.wait(self.LOG_WORKING - self.DONT_LOG):
             self.__write("")  # Clear the screen
             return
@@ -126,57 +130,56 @@ class StatusIndicator:
         while True:
 
             # Write text to screen, including a carriage return '\r'
-                    
+
             self.text_lock.acquire()
 
             # If required to stop after getting lock
             if self.stop_flag.is_set():
                 self.text_lock.release()
                 return
-            
+
             self.__write(f"Working: {self.text}")
 
             self.text_lock.release()
 
             # Wait the log period before printing again
-            
+
             if self.stop_flag.wait(self.LOG_PERIOD):
                 self.__write(" " * self.terminal_width)
                 return
-        
 
     def __write(self, text):
         """
         Write text to terminal, ending in a carriage return.
-        
+
         Truncates the text with ' ...' if it's to long
         """
 
         if len(text) > self.terminal_width:
             text = text[:self.terminal_width - 4] + " ..."
-        
+
         white_space = self.terminal_width - len(text)
         text = text + " " * white_space
 
         self.FILE.write(text + "\r")
-    
+
     def clear(self):
         """ Clear the line of text """
         self.__write("")
-    
+
     def start(self):
         """
         Start the thread
         """
         self.thread.start()
-    
+
     def stop(self):
         """Stop the thread"""
         self.stop_flag.set()
 
         # Wait for thread to finish
         self.thread.join()
-    
+
 
 class SizeAction(argparse.Action):
     """
@@ -189,34 +192,34 @@ class SizeAction(argparse.Action):
     Stores the given value if value is given for argument
     """
 
-    def __call__(self, parser, namespace, values, option_string = None):
+    def __call__(self, parser, namespace, values, option_string=None):
 
         if values is None:
             size_string = DEFAULT_FILE_SIZE_LIMIT
         else:
             size_string = values
-        
+
         setattr(
             namespace,
             self.dest,
             self.get_file_size_from_string(size_string)
         )
-    
+
     def get_file_size_from_string(self, string: str) -> int:
 
         string = string.lower()
 
         suffix_multiplier = 1
-        
+
         # Check for file size suffix
 
         for suffix in SIZES:
             if string.endswith(suffix):
                 suffix_multiplier = SIZES[suffix]
-                
+
                 # Remove the suffix from the string
                 string = string[:-1]
-        
+
         try:
             # Raises exception if string can't be parsed as a float
             size = float(string)
@@ -226,7 +229,7 @@ class SizeAction(argparse.Action):
                 file=sys.stderr
             )
             print(
-                f"Use sizes like '100m', '500k', '2G'...",
+                "Use sizes like '100m', '500k', '2G'...",
                 file=sys.stderr
             )
             sys.exit(1)
@@ -236,9 +239,12 @@ class SizeAction(argparse.Action):
 
 class Cleaner:
     def __init__(self):
-        
+
         # Don't mark exe files. May mark them in other ways
         self.hide_exe = False
+
+        # Don't follow symlinks by default
+        self.follow_symlinks = True
 
         # Print directories containing these files
         self.dir_marker_files = ["pyvenv.cfg", "CACHEDIR.TAG"]
@@ -271,12 +277,12 @@ class Cleaner:
         # Never ask for user input
         self.force = False
 
-        # Flag to delete marked items instead of deleting them
+        # Flag to delete marked items instead of printing them
         self.delete_marked_items = False
 
         # Status indicator in the terminal
         self.status = StatusIndicator()
-    
+
     def get_size(self, item_path: str):
         """
         Gets the size of a file or a directory.
@@ -288,25 +294,29 @@ class Cleaner:
         size of a subdirectory or file within called directory takes O(1)
         time.
 
-        After calling this print(f"Would delete {item.path} ...")function on a directory, all subdirectories
+        After calling this print(f"Would delete {item.path} ...") function on a
+        directory, all subdirectories
         and files in the directory will be stored as well as their sizes
         """
 
         if "DENIED" in item_path:
             pass
 
+        if os.path.islink(item_path):
+            return 0
+
         # If size already known, return it
         if item_path in self.sizes:
             self.status.update_text(item_path)
             return self.sizes[item_path]
-        
+
         if os.path.isfile(item_path):
             size = os.stat(item_path).st_size
             self.sizes[item_path] = size
 
             self.status.update_text(item_path)
             return size
-        
+
         elif os.path.isdir(item_path):
             # Get children of directory
             children = list(os.scandir(item_path))
@@ -316,18 +326,16 @@ class Cleaner:
             size = 0
             for child_item in children:
                 size += self.get_size(child_item.path)
-            
+
             self.sizes[item_path] = size
 
             self.status.update_text(item_path)
 
             return size
 
-            
         else:
             # Not a file or directory, or something with can read. Skip.
             return 0
-
 
     def evaluate(self, item: os.DirEntry):
         """
@@ -336,29 +344,39 @@ class Cleaner:
         hide_exe: doesn't return True for exe files
         """
 
+        if not self.follow_symlinks and os.path.islink(item.path):
+            return False
+
         if item.is_file():
             if not self.hide_exe and item.name.endswith(".exe"):
                 return True
 
-            if any([pattern.match(item.name) for pattern in self.mark_file_patterns]):
+            if any(
+                   [
+                       pattern.match(item.name) for
+                       pattern in self.mark_file_patterns
+                   ]
+               ):
+
                 return True
-        
+
         elif item.is_dir():
             # Search for marker files
             child_file_names = os.listdir(item.path)
-            
+
             for marker in self.dir_marker_files:
                 if marker in child_file_names:
                     return True
-        
+
         if self.check_size and self.evaluate_size(item):
             return True
-        
+
         return False
-    
+
     def evaluate_size(self, item: os.DirEntry) -> bool:
         """
-        Evaluates the size of the item, and if it needs to be marked because of this.
+        Evaluates the size of the item, and if it needs to be marked
+        because of this.
 
         If item is a directory, can take a long time!
         """
@@ -369,10 +387,9 @@ class Cleaner:
 
             return False
 
-
         if item.is_file():
             return True
-        
+
         if item.is_dir():
 
             # Only mark a directory if it's above the size limit AND none
@@ -398,21 +415,21 @@ class Cleaner:
         items.sort(key=lambda x: x.name)
 
         for item in items:
-            
+
             # Skip all symlinks
             if item.is_symlink():
                 continue
-            
+
             try:
                 # Check if you should print it
                 if self.evaluate(item):
                     self.marked_items.append(item)
-                
+
                 else:
                     if item.is_dir() and item.name not in self.skip_dirs:
                         # Search recursively
                         self.search(item.path)
-            
+
             except PermissionError:
                 # Don't have permission to read file
 
@@ -425,11 +442,11 @@ class Cleaner:
                         f"Read permission error: {item.path}",
                         file=sys.stderr
                     )
-                
+
                 # Release the lock, allowing the status to continue
-            
+
             self.status.update_text(item.path)
-    
+
     def delete_marked_item(self, item: os.DirEntry) -> bool:
         """
         Ask the user to delete an item, deleting if requested
@@ -445,11 +462,11 @@ class Cleaner:
                 size_str = HumanFilesize(self.sizes[item.path]).str()
             else:
                 size_str = ""
-    
+
             prompt_string = f"Remove {item.path}?"
             if size_str:
                 prompt_string += f" ({size_str})"
-            
+
             prompt_string += " (y/n) > "
 
             user_input = input(prompt_string).lower()
@@ -457,32 +474,32 @@ class Cleaner:
             if not user_input or "no" in user_input or user_input[0] != "y":
                 print("Skipping...")
                 return
-        
+
         try:
             if item.is_file():
                 os.remove(item.path)
-            
+
             elif item.is_dir():
                 shutil.rmtree(item.path)
         except:
             print(f"Delete permission error: {item.path}", file=sys.stderr)
 
-    
     def process_args(self):
         """
         Processes arguments and runs the search
         """
 
-        desc = "Searches target directory recessively location of python venv's," \
-           " Rust target/ directories, and exe files. Skips `.git` directories"
-        
+        desc = "Searches target directory recessively location of" \
+               " Python venv's, Rust target/ directories, and exe files. " \
+               "Skips `.git` directories. Does not follow symlinks."
+
         epilog = """Examples:
         List build environments in current directory:
         \trmenv
-        
+
         Delete build environments and directories and files over 200M in directory 'code':
         \trmenv -s 200M -d code --delete"""
-    
+
         parser = argparse.ArgumentParser(
             prog="rmvenv",
             description=desc,
@@ -506,7 +523,7 @@ class Cleaner:
                     "Doesn't have to be a build environment! " \
                     'Default size is 100M. Sizes can "1024", "50m", ' \
                     '"7.5G" ect.'
-        
+
         parser.add_argument(
             "-s", "--size",
             action=SizeAction,
@@ -539,27 +556,26 @@ class Cleaner:
             print(f"{parser.prog}: {VERSION}")
             sys.exit(0)
 
-
         if args.dir:
             path = args.dir
         else:
             path = "."
-        
+
         self.hide_exe = args.hide_exe
 
         if args.size:
             self.check_size = True
             self.mark_size_bytes = args.size
-        
+
         self.delete_marked_items = args.delete
         self.force = args.force
 
         # Search the directory, printing the status while doing so
-        
+
         self.status.start()
         self.search(path)
         self.status.stop()
-    
+
     def process_marked_items(self):
         """
         Processes marked items. Prints or deletes them
@@ -568,7 +584,7 @@ class Cleaner:
         if not self.delete_marked_items:
             for item in self.marked_items:
                 print(item.path)
-        
+
         else:
             for item in self.marked_items:
                 self.delete_marked_item(item)
@@ -580,7 +596,7 @@ def debug():
     sizes = [10 ** i for i in range(13, 20)]
     for s in sizes:
         print(s, HumanFilesize(s))
-    
+
 
 def main():
     try:
@@ -589,14 +605,14 @@ def main():
         try:
             c.process_args()
             c.process_marked_items()
-        
+
         except BaseException:
             # Tell the status thread to stop if it hasn't already
             c.status.stop_flag.set()
-            
+
             # Re-raise the exception
             raise
-    
+
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt", file=sys.stderr)
         sys.exit(130)
