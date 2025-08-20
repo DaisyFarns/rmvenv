@@ -8,7 +8,7 @@ import math
 import shutil
 import threading
 
-VERSION = "0.1.3"
+VERSION = "0.2.0"
 
 SIZES = {
     "k": 2 ** 10,
@@ -17,12 +17,13 @@ SIZES = {
     "t": 2 ** 40
 }
 
+
 class Config:
     # If deleting files and directories based on size, use this as the default
     DEFAULT_FILE_SIZE_LIMIT = "100m"
 
     # Files which match any of these are marked
-    marked_files = [re.compile(r"\.class")]  # java class files
+    marked_files = [re.compile(r"\.class$")]  # java class files
 
     # If a directory contains a file that matches a given pattern,
     # mark any items in that directory that match the following pattern
@@ -267,7 +268,7 @@ class Cleaner:
         self.follow_symlinks = False
 
         # os.DirEntry of marked items to print / delete
-        self.marked_items: list[os.DirEntry] = []
+        self.marked_items: set[os.DirEntry] = set()
 
         # Check for large files. By default, False
         self.check_size = False
@@ -292,7 +293,7 @@ class Cleaner:
         # Status indicator in the terminal
         self.status = StatusIndicator()
 
-    def get_size(self, item_path: str):
+    def get_size(self, item: os.DirEntry):
         """
         Gets the size of a file or a directory.
 
@@ -308,34 +309,34 @@ class Cleaner:
         and files in the directory will be stored as well as their sizes
         """
 
-        if "DENIED" in item_path:
+        if "DENIED" in item.path:
             pass
 
         # If size already known, return it
-        if item_path in self.sizes:
-            self.status.update_text(item_path)
-            return self.sizes[item_path]
+        if item.path in self.sizes:
+            self.status.update_text(item.path)
+            return self.sizes[item.path]
 
-        if os.path.isfile(item_path):
-            size = os.stat(item_path).st_size
-            self.sizes[item_path] = size
+        if item.is_file(follow_symlinks=False):
+            size = item.stat().st_size
+            self.sizes[item.path] = size
 
-            self.status.update_text(item_path)
+            self.status.update_text(item.path)
             return size
 
-        elif os.path.isdir(item_path):
+        elif item.is_dir(follow_symlinks=False):
             # Get children of directory
-            children = list(os.scandir(item_path))
 
-            self.children[item_path] = [child.path for child in children]
+            if item not in self.children:
+                self.children[item] = list(os.scandir(item.path))
 
             size = 0
-            for child_item in children:
-                size += self.get_size(child_item.path)
+            for child_item in self.children[item]:
+                size += self.get_size(child_item)
 
-            self.sizes[item_path] = size
+            self.sizes[item.path] = size
 
-            self.status.update_text(item_path)
+            self.status.update_text(item.path)
 
             return size
 
@@ -343,10 +344,14 @@ class Cleaner:
             # Not a file or directory, or something with can read. Skip.
             return 0
 
-    def evaluate(self, item: os.DirEntry):
+    def evaluate(self, item: os.DirEntry) -> bool:
         """
-        Evaluates a DirEntry object to deicide if it should be printed
+        Evaluates a DirEntry object to deicide if it should be marked
+        Will mark children of dir entries if able.
         """
+
+        if item in self.marked_items:
+            return True
 
         if not self.follow_symlinks and os.path.islink(item.path):
             return False
@@ -362,14 +367,28 @@ class Cleaner:
                 return True
 
         elif item.is_dir():
-            # Search for marker files
-            child_file_names = os.listdir(item.path)
+            if item not in self.children:
+                self.children[item] = list(os.scandir(item))
 
-            # TODO: make this mark thing work with the CONFIG variable
+            child_paths = [child.path for child in self.children[item]]
 
-            for marker in self.dir_marker_files:
-                if marker in child_file_names:
-                    return True
+
+            for (marker_re, marked_re) in CONFIG.marker_sub_directories.items():
+
+                # If this directory contains a file showing we need to
+                # mark something...
+                if any(
+                       [
+                           marker_re.search(child_path)
+                           for child_path in child_paths
+                       ]
+                ):
+
+                    # Find any children to mark
+
+                    for child in self.children[item]:
+                        if marked_re.search(child.name):
+                            self.marked_items.add(child.path)
 
         if self.check_size and self.evaluate_size(item):
             return True
@@ -385,7 +404,8 @@ class Cleaner:
         """
 
         # Calculate the size of the item
-        size = self.get_size(item.path)
+        size = self.get_size(item)
+
         if size < self.mark_size_bytes:
             return False
 
@@ -400,7 +420,7 @@ class Cleaner:
             # Only mark a directory if it's above the size limit AND none
             # of it's children are above the size limit
 
-            children = self.children[item.path]
+            children = self.children[item]
             children_sizes = [
                 self.get_size(child) for child in children
             ]
@@ -426,16 +446,33 @@ class Cleaner:
                 continue
 
             try:
+                if item.path in self.marked_items:
+                    continue
+
                 # Check if you should print it
                 if self.evaluate(item):
-                    self.marked_items.append(item)
+                    self.marked_items.add(item.path)
 
                 else:
-                    if item.is_dir() and item.name not in self.skip_dirs:
+                    if (
+                        item.is_dir() and
+
+                        # and the dir name doesn't match any patterns of ignore
+                        # in the config
+                        not any(
+                                [pattern.search(item.name)
+                                    for pattern in CONFIG.ignore]
+                            )
+                    ):
+
+                        if item.path in self.marked_items:
+                            print("---------------- Continue -----------")
+                            continue
+
                         # Search recursively
                         self.search(item.path)
 
-            except PermissionError:
+            except PermissionError as e:
                 # Don't have permission to read file
 
                 # Manage the status, as this is printed to stderr
@@ -452,7 +489,11 @@ class Cleaner:
 
             self.status.update_text(item.path)
 
-    def delete_marked_item(self, item: os.DirEntry) -> bool:
+            # Delete unneeded items
+            if item in self.children:
+                del self.children[item]
+
+    def delete_marked_item(self, item_path) -> bool:
         """
         Ask the user to delete an item, deleting if requested
 
@@ -463,12 +504,12 @@ class Cleaner:
         """
 
         if not self.force:
-            if item.path in self.sizes:
-                size_str = HumanFilesize(self.sizes[item.path]).str()
+            if item_path in self.sizes:
+                size_str = HumanFilesize(self.sizes[item_path]).str()
             else:
                 size_str = ""
 
-            prompt_string = f"Remove {item.path}?"
+            prompt_string = f"Remove {item_path}?"
             if size_str:
                 prompt_string += f" ({size_str})"
 
@@ -481,13 +522,14 @@ class Cleaner:
                 return
 
         try:
-            if item.is_file():
-                os.remove(item.path)
+            if os.path.isfile(item_path):
+                os.remove(item_path)
 
-            elif item.is_dir():
-                shutil.rmtree(item.path)
-        except:
-            print(f"Delete permission error: {item.path}", file=sys.stderr)
+            elif os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+
+        except Exception:
+            print(f"Delete permission error: {item_path}", file=sys.stderr)
 
     def process_args(self):
         """
@@ -579,12 +621,12 @@ class Cleaner:
         """
 
         if not self.delete_marked_items:
-            for item in self.marked_items:
-                print(item.path)
+            for item_path in self.marked_items:
+                print(item_path)
 
         else:
-            for item in self.marked_items:
-                self.delete_marked_item(item)
+            for item_path in self.marked_items:
+                self.delete_marked_item(item_path)
 
 
 def debug():
@@ -612,7 +654,11 @@ def main():
 
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt", file=sys.stderr)
-        sys.exit(130)
+
+        if True:
+            sys.exit(130)
+        else:
+            raise
 
 
 if __name__ == "__main__":
