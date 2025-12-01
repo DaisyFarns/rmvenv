@@ -8,7 +8,7 @@ import math
 import shutil
 import threading
 
-VERSION = "0.2.0"
+VERSION = "0.2.2"
 
 SIZES = {
     "k": 2 ** 10,
@@ -34,7 +34,11 @@ class Config:
 
         re.compile(r"Cargo\.toml"): re.compile(r"^target$"),  # Rust
 
-        re.compile(r".*\.csproj"): re.compile(r"(bin)|(obj)")  # C#
+        re.compile(r".*\.csproj"): re.compile(r"(bin)|(obj)"),  # C sharp
+
+        re.compile(r"CMakeLists\.txt"): re.compile(r"^build$"),
+
+    
     }
 
     # Do not mark nor explore these directories (except for size)
@@ -293,7 +297,7 @@ class Cleaner:
         # Status indicator in the terminal
         self.status = StatusIndicator()
 
-    def get_size(self, item: os.DirEntry):
+    def get_size(self, item: os.DirEntry | str):
         """
         Gets the size of a file or a directory.
 
@@ -309,22 +313,41 @@ class Cleaner:
         and files in the directory will be stored as well as their sizes
         """
 
-        if "DENIED" in item.path:
+        if type(item) is str:
+            item_path = item
+            is_item_file = (not os.path.islink(item)) and os.path.isfile(item)
+        else:
+            item_path = item.path
+            is_item_file = item.is_file(follow_symlinks=False)
+
+        if "DENIED" in item_path:
             pass
 
         # If size already known, return it
-        if item.path in self.sizes:
-            self.status.update_text(item.path)
-            return self.sizes[item.path]
+        if item_path in self.sizes:
+            self.status.update_text(item_path)
+            return self.sizes[item_path]
 
-        if item.is_file(follow_symlinks=False):
-            size = item.stat().st_size
-            self.sizes[item.path] = size
+        try:
+            if type(item) is str:
+                item_stat = os.stat(item)
+                is_item_dir = os.path.isdir(item) and (not os.path.islink(item))
+            else:
+                item_stat = item.stat()
+                is_item_dir = item.is_dir(follow_symlinks=False)
+        except FileNotFoundError:
+            # If the file isn't found for whatever reason, then it can't be
+            # stated or have any size, so return zero
+            return 0
 
-            self.status.update_text(item.path)
+        if is_item_file:
+            size = item_stat.st_size
+            self.sizes[item_path] = size
+
+            self.status.update_text(item_path)
             return size
 
-        elif item.is_dir(follow_symlinks=False):
+        elif is_item_dir:
             # Get children of directory
 
             if item not in self.children:
@@ -334,9 +357,9 @@ class Cleaner:
             for child_item in self.children[item]:
                 size += self.get_size(child_item)
 
-            self.sizes[item.path] = size
+            self.sizes[item_path] = size
 
-            self.status.update_text(item.path)
+            self.status.update_text(item_path)
 
             return size
 
@@ -344,7 +367,7 @@ class Cleaner:
             # Not a file or directory, or something with can read. Skip.
             return 0
 
-    def evaluate(self, item: os.DirEntry) -> bool:
+    def evaluate(self, item: os.DirEntry | str) -> bool:
         """
         Evaluates a DirEntry object to deicide if it should be marked
         Will mark children of dir entries if able.
@@ -353,20 +376,34 @@ class Cleaner:
         if item in self.marked_items:
             return True
 
-        if not self.follow_symlinks and os.path.islink(item.path):
+        if type(item) is str:
+            is_item_symlink = os.path.islink(item)
+        else:
+            is_item_symlink = os.path.islink(item.path)
+
+        if not self.follow_symlinks and is_item_symlink:
             return False
 
-        if item.is_file():
+        if type(item) is str:
+            is_item_file = os.path.isfile(item)
+            is_item_dir = os.path.isdir(item)
+            item_name = os.path.basename(item)
+        else:
+            is_item_file = item.is_file()
+            is_item_dir = item.is_dir()
+            item_name = item.name
+
+        if is_item_file:
             if any(
                    [
-                       pattern.search(item.name) for
+                       pattern.search(item_name) for
                        pattern in CONFIG.marked_files
                    ]
                ):
 
                 return True
 
-        elif item.is_dir():
+        elif is_item_dir:
             if item not in self.children:
                 self.children[item] = list(os.scandir(item))
 
@@ -395,7 +432,7 @@ class Cleaner:
 
         return False
 
-    def evaluate_size(self, item: os.DirEntry) -> bool:
+    def evaluate_size(self, item: os.DirEntry | str) -> bool:
         """
         Evaluates the size of the item, and if it needs to be marked
         because of this.
@@ -403,19 +440,28 @@ class Cleaner:
         If item is a directory, can take a long time!
         """
 
+        if type(item) is str:
+            is_item_symlink = os.path.islink(item)
+            is_item_file = os.path.isfile(item)
+            is_item_dir = os.path.isdir(item)
+        else:
+            is_item_symlink = item.is_symlink()
+            is_item_file = item.is_file()
+            is_item_dir = item.is_dir()
+            
         # Calculate the size of the item
         size = self.get_size(item)
 
         if size < self.mark_size_bytes:
             return False
 
-        if self.follow_symlinks and item.is_symlink():
+        if self.follow_symlinks and is_item_symlink:
             return False
 
-        if item.is_file():
+        if is_item_file:
             return True
 
-        if item.is_dir():
+        if is_item_dir:
 
             # Only mark a directory if it's above the size limit AND none
             # of it's children are above the size limit
@@ -472,7 +518,7 @@ class Cleaner:
                         # Search recursively
                         self.search(item.path)
 
-            except PermissionError as e:
+            except PermissionError:
                 # Don't have permission to read file
 
                 # Manage the status, as this is printed to stderr
@@ -612,6 +658,24 @@ class Cleaner:
         # Search the directory, printing the status while doing so
 
         self.status.start()
+
+        # Evaluate the top level directory
+        try:
+            self.evaluate(path)
+        
+        except PermissionError:
+            # Don't have permission to read file
+
+            # Manage the status, as this is printed to stderr
+            with self.status.text_lock:
+                self.status.clear()
+
+                # Print error information
+                print(
+                    f"Read permission error: {path}",
+                    file=sys.stderr
+                )
+
         self.search(path)
         self.status.stop()
 
@@ -620,12 +684,15 @@ class Cleaner:
         Processes marked items. Prints or deletes them
         """
 
+        marked_items_sorted = list(self.marked_items)
+        marked_items_sorted.sort(key=lambda x: x.lower())
+
         if not self.delete_marked_items:
-            for item_path in self.marked_items:
+            for item_path in marked_items_sorted:
                 print(item_path)
 
         else:
-            for item_path in self.marked_items:
+            for item_path in marked_items_sorted:
                 self.delete_marked_item(item_path)
 
 
