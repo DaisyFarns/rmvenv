@@ -1,0 +1,26 @@
+default_max_size = "1024h"
+
+marked_files = [
+  '\*.class'
+]
+
+# ignored = '\.git'
+ignored = [
+  '\.git'
+]
+
+[project.Python]
+marker = '^((requirements\.txt)|(pyproject.toml))$'
+marked = '\*venv'
+
+[project.Rust]
+marker = '^Cargo\.toml$'
+marked = '^target$'
+
+[project.'C#']
+marker = '\.csproj$'
+marked = '^((bin)|(obj))$'
+
+[project.'C++']
+marker = '^CMakeLists\.txt$'
+marked = '^build$'

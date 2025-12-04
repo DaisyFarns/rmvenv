@@ -1,14 +1,16 @@
 #!/bin/python3
 
 import os
-import argparse
 import re
 import sys
 import math
 import shutil
+import tomllib
+import argparse
+import functools
 import threading
 
-VERSION = "0.2.2"
+VERSION = "0.3.0"
 
 SIZES = {
     "k": 2 ** 10,
@@ -17,36 +19,224 @@ SIZES = {
     "t": 2 ** 40
 }
 
+def is_list_of_strings(value) -> bool:
+    """Return True if the type is a list containing strings, if anything"""
+    # return type(value) is not list or not functools.reduce(lambda x: type(x) is str, value, True)
 
-class Config:
-    # If deleting files and directories based on size, use this as the default
-    DEFAULT_FILE_SIZE_LIMIT = "100m"
+    if type(value) is not list:
+        return False
 
-    # Files which match any of these are marked
-    marked_files = [re.compile(r"\.class$")]  # java class files
+    if not functools.reduce(lambda x, y: x and type(y) is str, value, True):
+        return False
 
-    # If a directory contains a file that matches a given pattern,
-    # mark any items in that directory that match the following pattern
-    marker_sub_directories = {
-        re.compile(
-            r"(requirements\.txt)|(pyproject.toml)"
-        ): re.compile(r"^\..*venv"),  # Python virtual environments
+    return True
 
-        re.compile(r"Cargo\.toml"): re.compile(r"^target$"),  # Rust
+def handle_re_error(error: re.error):
+    print("rmvenv: Regex error in " + fr"'{error.pattern}':", file=sys.stderr)
+    print(error, file=sys.stderr)
+    print(
+        "Were raw strings surrounded by ' characters "
+        "used in the TOML file?",
+        file=sys.stderr
+    )
+    sys.exit(78)
 
-        re.compile(r".*\.csproj"): re.compile(r"(bin)|(obj)"),  # C sharp
-
-        re.compile(r"CMakeLists\.txt"): re.compile(r"^build$"),
-
+class ConfigLoader:
+    """
+    Load configuration file
+    """
+    CONFIG_PATH = "/home/daisy/code/rmvenv/rmvenv_config.toml"
     
-    }
+    def __init__(self):
+        self.ignored: re.Pattern
+        self.marked_files: list[re.Pattern] = []
+        self.default_file_size: str
+        self.projects: dict[(str, re.Pattern), re.Pattern] = {}
 
-    # Do not mark nor explore these directories (except for size)
-    ignore = [re.compile(r"^\.git$")]
+        self.load_config()
+        
+    def load_config(self):
+        try:
+            with open(ConfigLoader.CONFIG_PATH, "rb") as file:
+                toml_file = tomllib.load(file)
 
+        except FileNotFoundError:
+            print(
+                  f"rmvenv: Couldn't find config file at: {ConfigLoader.CONFIG_PATH}",
+                  file=sys.stderr
+              )
+            sys.exit(1)
 
-CONFIG = Config()
+        except PermissionError as e:
+            print(
+                "rmvenv: Couldn't open config file ({}): {}".format(
+                    ConfigLoader.CONFIG_PATH, e
+                ),
+                file=sys.stderr
+            )
+            sys.exit(77)
 
+        except tomllib.TOMLDecodeError as e:
+            print(
+                f"rmvenv: Couldn't parse config file {ConfigLoader.CONFIG_PATH}:",
+                file=sys.stderr
+            )
+            print(e, file=sys.stderr)
+            sys.exit(1)
+
+        # Load and check key types
+
+        expected_keys = ["ignored", "default_max_size", "marked_files"]
+
+        unknown_keys = []
+
+        try:
+            for key, value in toml_file.items():
+                if key in expected_keys:
+
+                    expected_keys.remove(key)
+
+                    # A list of regexes of a directory name that are never
+                    # explored during search, expect for size calculation
+                    if key == "ignored":
+
+                        # Check type is a list, and that it only contains
+                        # strings if anything
+                        if not is_list_of_strings(value):
+                            raise TypeError(
+                                "'ignored' key must be a list of regex strings"
+                            )
+
+                        self.ignored = [re.compile(r) for r in value]
+
+                    # The default size of a file or directory to be marked if
+                    # marking directories for size
+                    elif key == "default_max_size":
+                        if type(value) is not str:
+                            raise TypeError(
+                                "'default_max_size' key must be a string "
+                                "of a filesize"
+                            )
+
+                        value = value.strip()
+                            
+                        if not re.match(
+                            r"\d+[kmgt]?", value,flags=re.IGNORECASE
+                        ):
+                            raise ValueError(
+                                "Can't interpret '{fr'{value}'}'"
+                                "(default_max_size) as a filesize. "
+                                "Use '2048', '50M', etc")
+
+                        self.default_file_size = value
+
+                    # A list of regex of filenames to always mark
+                    elif key == "marked_files":
+                        if not is_list_of_strings(value):
+                            raise TypeError(
+                                "'marked_files' must be a list of regex strings"
+                            )
+
+                        self.marked_files = [re.compile(r) for r in value]
+
+                    else:
+                        # logic error
+                        raise NotImplementedError(
+                            "Expected a known key but wasn't tested. "
+                        )
+
+                else:
+                    unknown_keys.append(key)
+
+            # Check that all keys were used and no unknown keys are used
+         
+            if "project" in unknown_keys:
+                unknown_keys.remove("project")  # Special key that will be
+                                                # handled later
+        
+            if len(expected_keys) > 0 or len(unknown_keys) > 0:
+                print("rmvenv: Configuration error:")
+                if len(expected_keys) > 0:
+                    print(
+                        "The following keys are missing from the config file:",
+                        file=sys.stderr
+                    )
+                    print(f"\t{expected_keys}", file=sys.stderr)
+                if len(unknown_keys):
+                    print(
+                        "The following keys from the config file are unknown:",
+                        file=sys.stderr
+                    )
+                    print(f"\t{unknown_keys}", file=sys.stderr)
+
+                sys.exit(1)
+
+            if "project" in toml_file:
+
+                # Verify that "project" table is a directory of strings as keys,
+                # who's values are a dictionary containing the keys 'marker' and
+                # 'marked' which are a single string or a regular expression
+
+                projects: dict = toml_file["project"]
+
+                if type(projects) is not dict:
+                    raise TypeError("'project' must be a table or dictionary")
+
+                for key, value in projects.items():
+
+                    # `value` should be a dictionary containing two keys
+                    if type(value) is not dict:
+                        raise TypeError(
+                            "project '{}' must be a table or dictionary"
+                            .format(rf"{key}")
+                        )
+
+                    if "marker" not in value or "marked" not in value:
+                        raise TypeError(
+                            "project '{}' must contain the keys 'marker' and 'marked' as strings"
+                            .format(rf"{key}")
+                        )
+
+                    for regex_key in ["marker", "marked"]:
+                        if type(value[regex_key]) is not str:
+                            raise TypeError(
+                                "Type of the value for the '{}' in project "
+                                "'{}' must be a string"
+                                .format(regex_key, fr"{key}")
+                            )
+
+                self.set_project_regexes(projects)
+
+        except TypeError as e:
+            print("rmvenv: Configuration type error:", file=sys.stderr)
+            print(e, file=sys.stderr)
+            sys.exit(78)
+
+        except ValueError as e:
+            print("rmvenv: Configuration value error:", file=sys.stderr)
+            print(e, file=sys.stderr)
+            sys.exit(78)
+
+        except re.error as e:
+            handle_re_error(e)
+
+    def set_project_regexes(self, project_info):
+        """
+        Take input of the project table, and add it to the self.projects dict.
+        Types must have already been validated before this function call.
+
+        Raises re.error during regex compilation. 
+        """
+
+        for project_name in project_info:
+            self.projects[
+                (project_name, re.compile(project_info[project_name]["marker"]))
+            ] = re.compile(project_info[project_name]["marked"])
+        
+# TODO Test config 
+
+config = ConfigLoader()
+sys.exit(0)
 
 # This class can just be printed
 class HumanFilesize:
@@ -223,7 +413,7 @@ class SizeAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
 
         if values is None:
-            size_string = CONFIG.DEFAULT_FILE_SIZE_LIMIT
+            size_string = config.DEFAULT_FILE_SIZE_LIMIT
         else:
             size_string = values
 
@@ -397,7 +587,7 @@ class Cleaner:
             if any(
                    [
                        pattern.search(item_name) for
-                       pattern in CONFIG.marked_files
+                       pattern in config.marked_files
                    ]
                ):
 
@@ -410,7 +600,7 @@ class Cleaner:
             child_paths = [child.path for child in self.children[item]]
 
 
-            for (marker_re, marked_re) in CONFIG.marker_sub_directories.items():
+            for (marker_re, marked_re) in config.marker_sub_directories.items():
 
                 # If this directory contains a file showing we need to
                 # mark something...
@@ -495,7 +685,7 @@ class Cleaner:
                 if item.path in self.marked_items:
                     continue
 
-                # Check if you should print it
+                # Check if you should mark it
                 if self.evaluate(item):
                     self.marked_items.add(item.path)
 
@@ -507,7 +697,7 @@ class Cleaner:
                         # in the config
                         not any(
                                 [pattern.search(item.name)
-                                    for pattern in CONFIG.ignore]
+                                    for pattern in config.ignore]
                             )
                     ):
 

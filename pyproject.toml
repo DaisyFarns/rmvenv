@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rmvenv"
-version = "0.2.2"
+version = "0.3.0"
 authors = [
     {name="Daisy F", email="daisyfarns@gmail.com"}
 ]
@@ -12,7 +12,7 @@ description = "Find and delete built environments"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE.txt" }
-keywords = ["venv", "delete", "manage", "list", "rust", "target"]
+keywords = ["venv", "delete", "manage", "list", "rust", "target", "archive"]
 
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -21,7 +21,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
     "Natural Language :: English",
-    "Operating System :: OS Independent",  # Assumed
     "Topic :: Software Development :: Build Tools",
     "Topic :: System :: Archiving"
 ]
