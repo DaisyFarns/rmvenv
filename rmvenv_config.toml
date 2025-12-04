@@ -1,4 +1,4 @@
-default_max_size = "1024h"
+default_max_size = "1024m"
 
 marked_files = [
   '\*.class'

@@ -51,7 +51,7 @@ class ConfigLoader:
         self.ignored: re.Pattern
         self.marked_files: list[re.Pattern] = []
         self.default_file_size: str
-        self.projects: dict[(str, re.Pattern), re.Pattern] = {}
+        self.projects: dict[re.Pattern, re.Pattern] = {}
 
         self.load_config()
         
@@ -92,6 +92,7 @@ class ConfigLoader:
 
         try:
             for key, value in toml_file.items():
+                
                 if key in expected_keys:
 
                     expected_keys.remove(key)
@@ -121,12 +122,16 @@ class ConfigLoader:
                         value = value.strip()
                             
                         if not re.match(
-                            r"\d+[kmgt]?", value,flags=re.IGNORECASE
+                            r"^\d+[kmgt]?$",
+                            value,
+                            flags=re.IGNORECASE
                         ):
                             raise ValueError(
-                                "Can't interpret '{fr'{value}'}'"
+                                "Can't interpret {} "
                                 "(default_max_size) as a filesize. "
-                                "Use '2048', '50M', etc")
+                                "Use '2048', '50M', etc"
+                                .format(repr(value))
+                            )
 
                         self.default_file_size = value
 
@@ -155,7 +160,7 @@ class ConfigLoader:
                                                 # handled later
         
             if len(expected_keys) > 0 or len(unknown_keys) > 0:
-                print("rmvenv: Configuration error:")
+                print("rmvenv: Configuration error:", file=sys.stderr)
                 if len(expected_keys) > 0:
                     print(
                         "The following keys are missing from the config file:",
@@ -205,6 +210,14 @@ class ConfigLoader:
                                 .format(regex_key, fr"{key}")
                             )
 
+                    for regex_key in value:
+                        if regex_key not in ["marker", "marked"]:
+                            raise ValueError(
+                                f"key {repr(regex_key)} in "
+                                "project.{key} unknown.\n"
+                                "Must be one of 'marker' or 'marked'"
+                            )
+
                 self.set_project_regexes(projects)
 
         except TypeError as e:
@@ -230,13 +243,12 @@ class ConfigLoader:
 
         for project_name in project_info:
             self.projects[
-                (project_name, re.compile(project_info[project_name]["marker"]))
+                re.compile(project_info[project_name]["marker"])
             ] = re.compile(project_info[project_name]["marked"])
         
-# TODO Test config 
+# TODO Modify code to use new config, including printing where
 
 config = ConfigLoader()
-sys.exit(0)
 
 # This class can just be printed
 class HumanFilesize:
@@ -413,7 +425,7 @@ class SizeAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
 
         if values is None:
-            size_string = config.DEFAULT_FILE_SIZE_LIMIT
+            size_string = config.default_file_size
         else:
             size_string = values
 
@@ -599,14 +611,13 @@ class Cleaner:
 
             child_paths = [child.path for child in self.children[item]]
 
-
-            for (marker_re, marked_re) in config.marker_sub_directories.items():
+            for (marker_re, marked_re) in config.projects.items():
 
                 # If this directory contains a file showing we need to
                 # mark something...
                 if any(
                        [
-                           marker_re.search(child_path)
+                           marker_re.search(os.path.basename(child_path))
                            for child_path in child_paths
                        ]
                 ):
@@ -697,7 +708,7 @@ class Cleaner:
                         # in the config
                         not any(
                                 [pattern.search(item.name)
-                                    for pattern in config.ignore]
+                                    for pattern in config.ignored]
                             )
                     ):
 
@@ -791,7 +802,7 @@ class Cleaner:
         )
 
         parser.add_argument(
-            "-d", "--dir",
+            "directory",
             help="Directory to search (by default current directory)",
             nargs="?"
         )
@@ -833,8 +844,8 @@ class Cleaner:
             print(f"{parser.prog}: {VERSION}")
             sys.exit(0)
 
-        if args.dir:
-            path = args.dir
+        if args.directory:
+            path = args.directory
         else:
             path = "."
 
