@@ -45,24 +45,55 @@ class ConfigLoader:
     """
     Load configuration file
     """
-    CONFIG_PATH = "/home/daisy/code/rmvenv/rmvenv_config.toml"
+
+    # Relative to the this script
+    RELATIVE_DEFAULT_CONFIG_PATH = os.path.join("data", "default_config.toml")
+
+    # Relative to the HOME directory
+    RELATIVE_CONFIG_PATH = os.path.join(".config", "rmvenv_config.toml")
+
     
     def __init__(self):
+        self.config_path = ""
         self.ignored: re.Pattern
         self.marked_files: list[re.Pattern] = []
         self.default_file_size: str
         self.projects: dict[re.Pattern, re.Pattern] = {}
 
+        self.find_config()
         self.load_config()
+
+    def find_config(self):
+        """Find the configuration file in .config/rmvenv_config.toml"""
+        home_dir = os.environ["HOME"]
+        expected_config_path = os.path.join(home_dir, self.RELATIVE_CONFIG_PATH)
+
+        if not os.path.exists(expected_config_path):
+            home_config_path = os.path.dirname(self.RELATIVE_CONFIG_PATH)
+            if not os.path.exists(home_config_path):
+                os.mkdir(home_config_path)
+
+            this_script_dir_path = os.path.dirname(os.path.abspath(__file__))
+            default_config_path = os.path.join(
+                this_script_dir_path, self.RELATIVE_DEFAULT_CONFIG_PATH
+            )
+
+            shutil.copy(default_config_path, expected_config_path)
+            print(
+                f"note: Created default config file at {expected_config_path}",
+                file=sys.stderr
+            )
+
+        self.config_path = expected_config_path
         
     def load_config(self):
         try:
-            with open(ConfigLoader.CONFIG_PATH, "rb") as file:
+            with open(self.config_path, "rb") as file:
                 toml_file = tomllib.load(file)
 
         except FileNotFoundError:
             print(
-                  f"rmvenv: Couldn't find config file at: {ConfigLoader.CONFIG_PATH}",
+                  f"rmvenv: Couldn't find config file at: {self.config_path}",
                   file=sys.stderr
               )
             sys.exit(1)
@@ -70,7 +101,7 @@ class ConfigLoader:
         except PermissionError as e:
             print(
                 "rmvenv: Couldn't open config file ({}): {}".format(
-                    ConfigLoader.CONFIG_PATH, e
+                    self.config_path, e
                 ),
                 file=sys.stderr
             )
@@ -78,7 +109,7 @@ class ConfigLoader:
 
         except tomllib.TOMLDecodeError as e:
             print(
-                f"rmvenv: Couldn't parse config file {ConfigLoader.CONFIG_PATH}:",
+                f"rmvenv: Couldn't parse config file {self.config_path}:",
                 file=sys.stderr
             )
             print(e, file=sys.stderr)
@@ -555,7 +586,7 @@ class Cleaner:
             if item not in self.children:
                 self.children[item] = list(os.scandir(item.path))
 
-            size = 0
+            size = item_stat.st_size
             for child_item in self.children[item]:
                 size += self.get_size(child_item)
 
